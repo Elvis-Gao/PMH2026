@@ -1,0 +1,105 @@
+COLAB: TRAIN AN OUTLINE (SEGMENTATION) MODEL  ~25-35 min
+=========================================================
+Same idea as COLAB_TRAIN_ALL.txt, but it KEEPS the outlines you drew in Roboflow
+and trains yolov8s-seg, which outputs outlines instead of boxes.
+polevision_app.py and check_model.py detect this automatically and draw outlines.
+
+TIME RULE: if training isn't finished by 7:50, stop it (■) and run CELL 6-SEG anyway.
+
+New Colab notebook -> Runtime -> Change runtime type -> T4 GPU -> Save.
+Run CELL 1, 2, 3 from COLAB_TRAIN_ALL.txt first (unchanged), then these:
+
+
+==================== CELL 4-SEG: merge, keeping outlines ====================
+import os, shutil, random
+OUT = "/content/merged_seg"
+shutil.rmtree(OUT, ignore_errors=True)
+counts = collections.Counter()
+poly_n, box_n = 0, 0
+
+for i in USE:
+    loc = dsets[i]
+    for split in ("train", "valid", "test"):
+        img_dir = f"{loc}/{split}/images"
+        if not os.path.isdir(img_dir):
+            continue
+        dst = "valid" if split == "test" else split
+        os.makedirs(f"{OUT}/{dst}/images", exist_ok=True)
+        os.makedirs(f"{OUT}/{dst}/labels", exist_ok=True)
+        for img in glob.glob(f"{img_dir}/*"):
+            base, ext = os.path.splitext(os.path.basename(img))
+            lbl = f"{loc}/{split}/labels/{base}.txt"
+            out = []
+            if os.path.exists(lbl):
+                for line in open(lbl):
+                    v = line.split()
+                    if len(v) < 5:
+                        continue
+                    new = MAPS[i][int(v[0])]
+                    if new in (None, "UNKNOWN"):
+                        continue
+                    nums = list(map(float, v[1:]))
+                    if len(nums) == 4:                      # a plain box -> 4-corner outline
+                        x, y, w, h = nums
+                        nums = [x - w/2, y - h/2, x + w/2, y - h/2, x + w/2, y + h/2, x - w/2, y + h/2]
+                        box_n += 1
+                    else:
+                        poly_n += 1
+                    out.append(f"{FINAL.index(new)} " + " ".join(f"{n:.6f}" for n in nums))
+                    counts[new] += 1
+            shutil.copy(img, f"{OUT}/{dst}/images/ds{i}_{base}{ext}")
+            open(f"{OUT}/{dst}/labels/ds{i}_{base}.txt", "w").write("\n".join(out))
+
+os.makedirs(f"{OUT}/valid/images", exist_ok=True); os.makedirs(f"{OUT}/valid/labels", exist_ok=True)
+tr = glob.glob(f"{OUT}/train/images/*"); va = glob.glob(f"{OUT}/valid/images/*")
+need = int(0.2 * (len(tr) + len(va))) - len(va)
+random.seed(0)
+for img in random.sample(tr, max(0, need)):
+    b = os.path.splitext(os.path.basename(img))[0]
+    shutil.move(img, f"{OUT}/valid/images/")
+    shutil.move(f"{OUT}/train/labels/{b}.txt", f"{OUT}/valid/labels/")
+
+yaml.safe_dump({"path": OUT, "train": "train/images", "val": "valid/images", "names": FINAL},
+               open(f"{OUT}/data.yaml", "w"))
+print("train:", len(glob.glob(f"{OUT}/train/images/*")), " valid:", len(glob.glob(f"{OUT}/valid/images/*")))
+print("boxes per class:", dict(counts))
+print(f"real outlines: {poly_n}   plain boxes turned into rectangles: {box_n}")
+print("CELL 4-SEG DONE")
+
+  CHECK: "real outlines" should be most of them. If it's mostly "plain boxes",
+  your Roboflow labels are boxes, not outlines, and this model won't look different.
+
+
+==================== CELL 5-SEG: train (30 epochs) ====================
+from ultralytics import YOLO
+model = YOLO("yolov8s-seg.pt")
+model.train(
+    data="/content/merged_seg/data.yaml",
+    epochs=30,
+    patience=10,
+    imgsz=960,
+    batch=8,
+    project="/content/drive/MyDrive/polevision",
+    name="seg",
+    exist_ok=True,
+)
+print("CELL 5-SEG DONE")
+
+
+==================== CELL 6-SEG: scores + download ====================
+from ultralytics import YOLO
+best = YOLO("/content/drive/MyDrive/polevision/seg/weights/best.pt")
+m = best.val(data="/content/merged_seg/data.yaml", imgsz=960)
+print("\nOutline accuracy per class (mask mAP50):")
+for j, cls_id in enumerate(m.seg.ap_class_index):
+    print(f"  {best.names[int(cls_id)]:<12} {m.seg.ap50[j]:.2f}")
+from google.colab import files
+files.download("/content/drive/MyDrive/polevision/seg/weights/best.pt")
+print("CELL 6-SEG DONE")
+
+
+==================== AFTER ====================
+Rename the download to best_seg.pt, put it in the PoleVision folder, then:
+    python check_model.py photos --model best_seg.pt
+    python polevision_app.py photos --no-arduino --model best_seg.pt
+Keep your old best.pt as the backup.

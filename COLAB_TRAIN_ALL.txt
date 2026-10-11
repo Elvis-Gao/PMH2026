@@ -1,0 +1,178 @@
+COLAB: TRAIN ON ALL 3 DATASETS (better model)  ~30-40 min
+=========================================================
+Start a NEW Colab notebook: Runtime -> Change runtime type -> T4 GPU -> Save.
+Paste each cell into its own code cell, Shift+Enter, wait for "DONE".
+
+Improvements over last time:
+  - 3 datasets merged (wires-only dataset is skipped automatically)
+  - 20% of photos held back for honest grading (last time it was only 1 photo)
+  - YOLOv8s (bigger, more accurate) instead of YOLOv8n
+  - 80 epochs with early stopping
+
+
+==================== CELL 1: install + Google Drive ====================
+!pip install -q ultralytics roboflow
+from google.colab import drive
+drive.mount('/content/drive')
+import os
+os.makedirs('/content/drive/MyDrive/polevision', exist_ok=True)
+print("CELL 1 DONE")
+
+
+==================== CELL 2: download the 3 datasets ====================
+from roboflow import Roboflow
+rf = Roboflow(api_key="T1nBzIWE3VXwiD7PEBn7")
+
+SOURCES = [
+    ("rob-shrestha", "wires-jiluq-wdi5c", 2),
+    ("rob-shrestha", "ktp-hackathon", 1),
+    ("rob-shrestha", "oka-test-pole-detection", 1),
+]
+
+dsets = []
+for i, (ws, proj, ver) in enumerate(SOURCES):
+    d = rf.workspace(ws).project(proj).version(ver).download("yolov8", location=f"/content/ds{i}")
+    dsets.append(d.location)
+print("CELL 2 DONE:", dsets)
+
+
+==================== CELL 3: auto-map class names ====================
+import yaml, glob, collections
+
+OVERRIDE = {}   # only if this cell says UNKNOWN, e.g. {"some name": "pole"} or {"some name": None}
+
+def load_names(loc):
+    n = yaml.safe_load(open(f"{loc}/data.yaml"))["names"]
+    return [n[k] for k in sorted(n)] if isinstance(n, dict) else n
+
+def auto_map(name):
+    n = name.lower().strip()
+    if n in OVERRIDE: return OVERRIDE[n]
+    if any(k in n for k in ("telecom", "comm", "fiber", "fibre", "splice", "cable box", "terminal")): return "comm"
+    if "transformer" in n or "xfmr" in n: return "transformer"
+    if "cross" in n: return "crossarm"
+    if "insulator" in n: return "insulator"
+    if "pole" in n: return "pole"
+    if any(k in n for k in ("wire", "line", "cable", "conductor")): return None
+    return "UNKNOWN"
+
+ORDER = ["pole", "transformer", "crossarm", "insulator", "comm"]
+MAPS, USE, present = {}, [], set()
+for i, loc in enumerate(dsets):
+    names = load_names(loc)
+    c = collections.Counter()
+    for split in ("train", "valid", "test"):
+        for f in glob.glob(f"{loc}/{split}/labels/*.txt"):
+            for line in open(f):
+                if line.strip():
+                    c[names[int(line.split()[0])]] += 1
+    MAPS[i] = [auto_map(nm) for nm in names]
+    print(f"\nds{i} ({SOURCES[i][1]}):")
+    for nm, mp in zip(names, MAPS[i]):
+        tag = "DROPPED" if mp is None else ("UNKNOWN -> add to OVERRIDE" if mp == "UNKNOWN" else f"-> {mp}")
+        print(f"   {nm:<25} {c[nm]:>6} boxes   {tag}")
+    kept = {m for m in MAPS[i] if m not in (None, "UNKNOWN")}
+    if kept:
+        USE.append(i); present |= kept
+        print(f"   USING this dataset (gives: {sorted(kept)})")
+    else:
+        print("   SKIPPING this dataset: it has none of the classes we need")
+
+FINAL = [k for k in ORDER if k in present]
+print("\nFINAL classes:", FINAL)
+print("Datasets used:", [SOURCES[i][1] for i in USE])
+print("CELL 3 DONE")
+
+
+==================== CELL 4: merge + make a real validation set ====================
+import os, shutil, random
+OUT = "/content/merged"
+shutil.rmtree(OUT, ignore_errors=True)
+counts = collections.Counter()
+
+for i in USE:
+    loc = dsets[i]
+    for split in ("train", "valid", "test"):
+        img_dir = f"{loc}/{split}/images"
+        if not os.path.isdir(img_dir):
+            continue
+        dst = "valid" if split == "test" else split          # use test photos for grading too
+        os.makedirs(f"{OUT}/{dst}/images", exist_ok=True)
+        os.makedirs(f"{OUT}/{dst}/labels", exist_ok=True)
+        for img in glob.glob(f"{img_dir}/*"):
+            base, ext = os.path.splitext(os.path.basename(img))
+            lbl = f"{loc}/{split}/labels/{base}.txt"
+            out = []
+            if os.path.exists(lbl):
+                for line in open(lbl):
+                    v = line.split()
+                    if len(v) < 5:
+                        continue
+                    new = MAPS[i][int(v[0])]
+                    if new in (None, "UNKNOWN"):
+                        continue
+                    nums = list(map(float, v[1:]))
+                    if len(nums) > 4:
+                        xs, ys = nums[0::2], nums[1::2]
+                        x1, x2, y1, y2 = min(xs), max(xs), min(ys), max(ys)
+                        nums = [(x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1]
+                    out.append(f"{FINAL.index(new)} " + " ".join(f"{n:.6f}" for n in nums))
+                    counts[new] += 1
+            shutil.copy(img, f"{OUT}/{dst}/images/ds{i}_{base}{ext}")
+            open(f"{OUT}/{dst}/labels/ds{i}_{base}.txt", "w").write("\n".join(out))
+
+# make sure at least 20% of all photos are in validation
+os.makedirs(f"{OUT}/valid/images", exist_ok=True); os.makedirs(f"{OUT}/valid/labels", exist_ok=True)
+tr = glob.glob(f"{OUT}/train/images/*"); va = glob.glob(f"{OUT}/valid/images/*")
+need = int(0.2 * (len(tr) + len(va))) - len(va)
+random.seed(0)
+for img in random.sample(tr, max(0, need)):
+    b = os.path.splitext(os.path.basename(img))[0]
+    shutil.move(img, f"{OUT}/valid/images/")
+    shutil.move(f"{OUT}/train/labels/{b}.txt", f"{OUT}/valid/labels/")
+
+yaml.safe_dump({"path": OUT, "train": "train/images", "val": "valid/images", "names": FINAL},
+               open(f"{OUT}/data.yaml", "w"))
+print("train:", len(glob.glob(f"{OUT}/train/images/*")), " valid:", len(glob.glob(f"{OUT}/valid/images/*")))
+print("boxes per class:", dict(counts))
+print("CELL 4 DONE")
+
+
+==================== CELL 5: train (about 20-35 min) ====================
+from ultralytics import YOLO
+model = YOLO("yolov8s.pt")
+model.train(
+    data="/content/merged/data.yaml",
+    epochs=80,
+    patience=20,
+    imgsz=960,
+    batch=16,
+    project="/content/drive/MyDrive/polevision",
+    name="all3",
+    exist_ok=True,
+)
+print("CELL 5 DONE")
+
+  "CUDA out of memory"  -> change batch=16 to batch=8 and rerun
+  Colab disconnected    -> rerun Cell 1, then:
+      from ultralytics import YOLO
+      YOLO("/content/drive/MyDrive/polevision/all3/weights/last.pt").train(resume=True)
+
+
+==================== CELL 6: real scores + download ====================
+from ultralytics import YOLO
+best = YOLO("/content/drive/MyDrive/polevision/all3/weights/best.pt")
+m = best.val(data="/content/merged/data.yaml", imgsz=960)
+print("\nAccuracy per class (mAP50; 0.6+ good, 0.3-0.6 ok, below 0.3 weak):")
+for j, cls_id in enumerate(m.box.ap_class_index):
+    print(f"  {best.names[int(cls_id)]:<12} {m.box.ap50[j]:.2f}")
+print("Classes the model knows:", best.names)
+from google.colab import files
+files.download("/content/drive/MyDrive/polevision/all3/weights/best.pt")
+print("CELL 6 DONE")
+
+
+==================== AFTER COLAB ====================
+Replace best.pt in the PoleVision folder with the new one, then:
+    python check_model.py photos
+    python polevision_app.py photos --no-arduino

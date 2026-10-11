@@ -1,0 +1,34 @@
+COLAB: RETRAIN WITH A PROPER VALIDATION SET (about 7 minutes)
+==============================================================
+Your first training used ~320 photos but graded itself on only 1 photo.
+Run these in the SAME Colab notebook (after Cells 1-4 have run).
+If Colab restarted, rerun Cells 1-4 first.
+
+---- CELL A: move 20% of training photos into validation ----
+import random, shutil, os, glob
+random.seed(1)
+train_imgs = glob.glob("/content/merged/train/images/*")
+for img in random.sample(train_imgs, len(train_imgs) // 5):
+    b = os.path.splitext(os.path.basename(img))[0]
+    shutil.move(img, "/content/merged/valid/images/")
+    shutil.move(f"/content/merged/train/labels/{b}.txt", "/content/merged/valid/labels/")
+print("train:", len(glob.glob("/content/merged/train/images/*")),
+      " valid:", len(glob.glob("/content/merged/valid/images/*")))
+
+---- CELL B: retrain into a new folder (old model stays safe) ----
+from ultralytics import YOLO
+model = YOLO("yolov8n.pt")
+model.train(data="/content/merged/data.yaml", epochs=60, imgsz=960, patience=15, batch=16,
+            project="/content/drive/MyDrive/polevision", name="merged2", exist_ok=True)
+
+---- CELL C: real scores per class + download ----
+best = YOLO("/content/drive/MyDrive/polevision/merged2/weights/best.pt")
+m = best.val(data="/content/merged/data.yaml", imgsz=960)
+print("\nAccuracy per class (mAP50; 0.6+ good, 0.3-0.6 ok, below 0.3 weak):")
+for j, cls_id in enumerate(m.box.ap_class_index):
+    print(f"  {best.names[int(cls_id)]:<12} {m.box.ap50[j]:.2f}")
+from google.colab import files
+files.download("/content/drive/MyDrive/polevision/merged2/weights/best.pt")
+
+Put the new best.pt in the PoleVision folder (replace the old one) and run:
+    python check_model.py photos

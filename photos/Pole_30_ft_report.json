@@ -1,0 +1,24 @@
+{
+  "photo": "photos\\Pole_30_ft.jpg",
+  "sensors": {
+    "pitch": 0.0,
+    "pitch_src": "assumed level",
+    "roll": null,
+    "still": null,
+    "dist": null,
+    "dist_src": null,
+    "f35": null,
+    "time": null
+  },
+  "flags": [],
+  "items": [],
+  "focal_35mm": 26.0,
+  "pole": {
+    "height_m": 3.01,
+    "sigma_m": 0.35,
+    "height_ft": 9.9,
+    "distance_m": 3.03
+  },
+  "wires_seen": 0,
+  "confidence": "low"
+}

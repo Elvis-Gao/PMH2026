@@ -1,0 +1,34 @@
+{
+  "photo": "photos\\IMG_4356.jpeg",
+  "sensors": {
+    "pitch": 0.0,
+    "pitch_src": "typed",
+    "roll": null,
+    "still": null,
+    "dist": 20.0,
+    "dist_src": "typed",
+    "f35": null,
+    "time": null
+  },
+  "flags": [],
+  "items": [
+    {
+      "cls": "crossarm",
+      "role": "electric",
+      "conf": 0.86,
+      "height_m": 23.45,
+      "sigma_m": 0.35,
+      "bottom_m": 22.07,
+      "top_m": 24.83
+    }
+  ],
+  "focal_35mm": 26.0,
+  "pole": {
+    "height_m": 19.63,
+    "sigma_m": 0.3,
+    "height_ft": 64.4,
+    "distance_m": 20.0
+  },
+  "wires_seen": 0,
+  "confidence": "high"
+}
